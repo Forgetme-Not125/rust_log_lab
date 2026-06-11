@@ -1,0 +1,13 @@
+[package]
+name = "rust_log_lab"
+version = "0.1.0"
+edition = "2021"
+authors = ["吴逸凡"]
+description = "A multithreaded Rust command line log analyzer for course final assignment."
+
+[dependencies]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
