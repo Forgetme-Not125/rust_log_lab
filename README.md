@@ -89,7 +89,7 @@ cargo run -- analyze examples/sample.log --format csv --out report.csv
 
 ## 四、日志格式
 
-本项目支持空格分隔的 `key=value` 日志。值可以使用双引号包裹。
+本项目支持空格分隔的 `key=value` 日志。值使用双引号包裹。
 
 ```text
 service=auth level=ERROR latency=120 msg="login failed"
@@ -110,11 +110,6 @@ cargo fmt
 cargo clippy
 ```
 
-## 六、提交说明
-
-提交源码时不要包含 `target/` 目录。可直接提交本项目文件夹，或者提交源码仓库链接。
-
-
-## 七、迭代版本说明
+## 六、迭代版本说明
 
 本版本在基础日志分析功能之外，新增 `export.rs` 报告导出模块。基础版本主要将分析结果输出到终端，迭代版本可以通过 `--out` 参数将报告保存为本地文件，并能够根据文件扩展名自动推断输出格式。例如，`report.md` 会自动生成 Markdown 报告，`report.json` 会自动生成 JSON 报告，`report.csv` 会自动生成 CSV 报告。
