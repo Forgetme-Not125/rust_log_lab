@@ -96,7 +96,6 @@ pub struct AnalysisResult {
     pub error_records: Vec<LogRecord>,
 }
 
-#[allow(dead_code)]
 impl AnalysisResult {
     pub fn error_like_count(&self) -> usize {
         self.level_stats

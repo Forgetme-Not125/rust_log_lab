@@ -1,13 +1,15 @@
 mod analyzer;
 mod cli;
 mod error;
+mod export;
 mod model;
 mod parser;
 mod report;
 
 use analyzer::{analyze_lines, AnalyzeOptions};
-use cli::{demo_lines, parse_env, read_lines, usage, write_output, Command};
+use cli::{demo_lines, parse_env, read_lines, usage, Command};
 use error::AppResult;
+use export::export_report;
 use model::OutputFormat;
 use report::render_report;
 
@@ -30,13 +32,13 @@ fn run() -> AppResult<()> {
             let lines = demo_lines();
             let result = analyze_lines(&lines, options.clone())?;
             let output = render_report(&result, OutputFormat::Text, options.top_n);
-            write_output(None, &output)
+            export_report(None, &output)
         }
         Command::Analyze(config) => {
             let lines = read_lines(&config.input)?;
             let result = analyze_lines(&lines, config.options.clone())?;
             let output = render_report(&result, config.format, config.options.top_n);
-            write_output(config.output.as_deref(), &output)
+            export_report(config.output.as_deref(), &output)
         }
     }
 }

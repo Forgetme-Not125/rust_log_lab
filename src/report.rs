@@ -86,20 +86,7 @@ pub struct ServiceSkewRule;
 
 impl Rule for ErrorRatioRule {
     fn apply(&self, result: &AnalysisResult, draft: &mut InsightDraft) {
-        let total = result.parsed_records.max(1) as f64;
-        let error_count = result
-            .level_stats
-            .by_level
-            .get(&LogLevel::Error)
-            .copied()
-            .unwrap_or(0)
-            + result
-                .level_stats
-                .by_level
-                .get(&LogLevel::Fatal)
-                .copied()
-                .unwrap_or(0);
-        let ratio = error_count as f64 / total;
+        let ratio = result.error_ratio();
         if ratio >= 0.30 {
             draft.penalize(45);
             draft.suggest(format!(
@@ -124,8 +111,7 @@ impl Rule for ErrorRatioRule {
 
 impl Rule for SlowRatioRule {
     fn apply(&self, result: &AnalysisResult, draft: &mut InsightDraft) {
-        let total = result.latency.count.max(1) as f64;
-        let ratio = result.latency.slow_count as f64 / total;
+        let ratio = result.slow_ratio();
         if ratio >= 0.40 {
             draft.penalize(35);
             draft.suggest(format!(
@@ -150,7 +136,7 @@ impl Rule for ParseErrorRule {
         if result.parse_errors.is_empty() {
             return;
         }
-        let ratio = result.parse_errors.len() as f64 / result.total_lines.max(1) as f64;
+        let ratio = result.parse_error_ratio();
         if ratio >= 0.20 {
             draft.penalize(20);
             draft.suggest(format!(
@@ -210,24 +196,11 @@ pub fn build_insight(result: &AnalysisResult) -> Insight {
         45..=69 => HealthLevel::Risky,
         _ => HealthLevel::Critical,
     };
-    let error_count = result
-        .level_stats
-        .by_level
-        .get(&LogLevel::Error)
-        .copied()
-        .unwrap_or(0)
-        + result
-            .level_stats
-            .by_level
-            .get(&LogLevel::Fatal)
-            .copied()
-            .unwrap_or(0);
-
     Insight {
         health,
         score,
-        error_ratio: error_count as f64 / result.parsed_records.max(1) as f64,
-        slow_ratio: result.latency.slow_count as f64 / result.latency.count.max(1) as f64,
+        error_ratio: result.error_ratio(),
+        slow_ratio: result.slow_ratio(),
         dominant_service: result.top_services.first().map(|item| item.key.clone()),
         suggestions: draft.suggestions,
     }
@@ -239,6 +212,11 @@ pub trait ReportRenderer {
 
 #[derive(Debug, Clone)]
 pub struct TextRenderer {
+    pub top_n: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct MarkdownRenderer {
     pub top_n: usize,
 }
 
@@ -349,25 +327,13 @@ impl ReportRenderer for TextRenderer {
 
         push_line(&mut out, "Error-like records");
         for record in result.error_records.iter().take(self.top_n) {
-            push_line(
-                &mut out,
-                &format!(
-                    "  line {:<4} {:<8} {:<7} {}",
-                    record.line_number, record.service, record.level, record.message
-                ),
-            );
+            push_line(&mut out, &format_record_text(record));
         }
         push_line(&mut out, "");
 
         push_line(&mut out, "Slow records");
         for record in result.slow_records.iter().take(self.top_n) {
-            push_line(
-                &mut out,
-                &format!(
-                    "  line {:<4} {:<8} {:>5?}ms {}",
-                    record.line_number, record.service, record.latency_ms, record.message
-                ),
-            );
+            push_line(&mut out, &format_record_text(record));
         }
 
         if !result.parse_errors.is_empty() {
@@ -375,6 +341,118 @@ impl ReportRenderer for TextRenderer {
             push_line(&mut out, "Parse errors");
             for err in result.parse_errors.iter().take(self.top_n) {
                 push_line(&mut out, &format!("  {err}"));
+            }
+        }
+        out
+    }
+}
+
+impl ReportRenderer for MarkdownRenderer {
+    fn render(&self, result: &AnalysisResult) -> String {
+        let insight = build_insight(result);
+        let mut out = String::new();
+        push_line(&mut out, "# Rust Log Lab 日志分析报告");
+        push_line(&mut out, "");
+        push_line(&mut out, "## 1. 基本信息");
+        push_line(&mut out, "");
+        push_line(&mut out, &format!("- 总日志行数：{}", result.total_lines));
+        push_line(
+            &mut out,
+            &format!("- 成功解析记录：{}", result.parsed_records),
+        );
+        push_line(&mut out, &format!("- 跳过行数：{}", result.skipped_lines));
+        push_line(
+            &mut out,
+            &format!("- 解析错误：{}", result.parse_errors.len()),
+        );
+        push_line(
+            &mut out,
+            &format!("- WARN 数量：{}", result.warning_count()),
+        );
+        push_line(
+            &mut out,
+            &format!("- ERROR/FATAL 数量：{}", result.error_like_count()),
+        );
+        push_line(&mut out, "");
+
+        push_line(&mut out, "## 2. 日志等级分布");
+        push_line(&mut out, "");
+        push_line(&mut out, "| 等级 | 数量 |");
+        push_line(&mut out, "|---|---:|");
+        for level in [
+            LogLevel::Trace,
+            LogLevel::Debug,
+            LogLevel::Info,
+            LogLevel::Warn,
+            LogLevel::Error,
+            LogLevel::Fatal,
+            LogLevel::Unknown,
+        ] {
+            let count = result
+                .level_stats
+                .by_level
+                .get(&level)
+                .copied()
+                .unwrap_or(0);
+            if count > 0 {
+                push_line(&mut out, &format!("| {} | {} |", level, count));
+            }
+        }
+        push_line(&mut out, "");
+
+        push_line(&mut out, "## 3. 健康评估");
+        push_line(&mut out, "");
+        push_line(&mut out, &format!("- 健康状态：{}", insight.health));
+        push_line(&mut out, &format!("- 健康分数：{}", insight.score));
+        push_line(
+            &mut out,
+            &format!("- 错误占比：{:.1}%", insight.error_ratio * 100.0),
+        );
+        push_line(
+            &mut out,
+            &format!("- 慢请求占比：{:.1}%", insight.slow_ratio * 100.0),
+        );
+        if !result.has_warnings_or_errors() {
+            push_line(&mut out, "- 当前过滤结果中没有 WARN/ERROR/FATAL 日志。");
+        }
+        if let Some(service) = &insight.dominant_service {
+            push_line(&mut out, &format!("- 主要服务：{}", service));
+        }
+        for suggestion in &insight.suggestions {
+            push_line(&mut out, &format!("- 建议：{}", suggestion));
+        }
+        push_line(&mut out, "");
+
+        push_line(&mut out, &format!("## 4. Top {} 服务", self.top_n));
+        push_line(&mut out, "");
+        push_line(&mut out, "| 服务 | 数量 |");
+        push_line(&mut out, "|---|---:|");
+        for item in &result.top_services {
+            push_line(
+                &mut out,
+                &format!("| {} | {} |", escape_markdown(&item.key), item.count),
+            );
+        }
+        push_line(&mut out, "");
+
+        push_line(&mut out, "## 5. 错误日志样例");
+        push_line(&mut out, "");
+        if result.error_records.is_empty() {
+            push_line(&mut out, "暂无错误日志样例。");
+        } else {
+            for record in result.error_records.iter().take(self.top_n) {
+                push_line(&mut out, &format!("- {}", format_record_markdown(record)));
+            }
+        }
+        push_line(&mut out, "");
+
+        push_line(&mut out, "## 6. 慢请求样例");
+        push_line(&mut out, "");
+        if result.slow_records.is_empty() {
+            push_line(&mut out, "暂无慢请求样例。");
+        } else {
+            for record in result.slow_records.iter().take(self.top_n) {
+                push_line(&mut out, &format!("- {}", format_record_markdown(record)));
             }
         }
         out
@@ -525,9 +603,47 @@ impl ReportRenderer for CsvRenderer {
 pub fn render_report(result: &AnalysisResult, format: OutputFormat, top_n: usize) -> String {
     match format {
         OutputFormat::Text => TextRenderer { top_n }.render(result),
+        OutputFormat::Markdown => MarkdownRenderer { top_n }.render(result),
         OutputFormat::Json => JsonRenderer { top_n }.render(result),
         OutputFormat::Csv => CsvRenderer.render(result),
     }
+}
+
+fn format_record_text(record: &crate::model::LogRecord) -> String {
+    let request = record
+        .field("request_id")
+        .or_else(|| record.field("trace_id"))
+        .map(|value| format!(" request={value}"))
+        .unwrap_or_default();
+    let latency = record
+        .latency_ms
+        .map(|value| format!(" {value}ms"))
+        .unwrap_or_default();
+    format!(
+        "  line {:<4} {:<8} {:<7}{}{} {}",
+        record.line_number, record.service, record.level, latency, request, record.message
+    )
+}
+
+fn format_record_markdown(record: &crate::model::LogRecord) -> String {
+    let request = record
+        .field("request_id")
+        .or_else(|| record.field("trace_id"))
+        .map(|value| format!(", request `{}`", escape_markdown(value)))
+        .unwrap_or_default();
+    let latency = record
+        .latency_ms
+        .map(|value| format!(", 耗时 `{value}ms`"))
+        .unwrap_or_default();
+    format!(
+        "第 {} 行，服务 `{}`，等级 `{}`{}{}，消息：{}",
+        record.line_number,
+        escape_markdown(&record.service),
+        record.level,
+        latency,
+        request,
+        escape_markdown(&record.message)
+    )
 }
 
 fn push_line(out: &mut String, line: &str) {
@@ -557,10 +673,29 @@ fn escape_csv(input: &str) -> String {
     }
 }
 
+fn escape_markdown(input: &str) -> String {
+    input
+        .replace('\\', "\\\\")
+        .replace('|', "\\|")
+        .replace('`', "\\`")
+        .replace('*', "\\*")
+        .replace('_', "\\_")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::analyzer::{analyze_lines, AnalyzeOptions};
+
+    #[test]
+    fn markdown_report_contains_sections() {
+        let lines =
+            vec!["service=auth level=ERROR latency=10 request_id=req-1 msg=bad".to_string()];
+        let result = analyze_lines(&lines, AnalyzeOptions::default()).unwrap();
+        let report = render_report(&result, OutputFormat::Markdown, 5);
+        assert!(report.contains("# Rust Log Lab 日志分析报告"));
+        assert!(report.contains("request `req-1`"));
+    }
 
     #[test]
     fn text_report_contains_title() {

@@ -7,6 +7,7 @@
 pub mod analyzer;
 pub mod cli;
 pub mod error;
+pub mod export;
 pub mod model;
 pub mod parser;
 pub mod report;

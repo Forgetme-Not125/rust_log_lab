@@ -1,10 +1,10 @@
 use std::env;
 use std::fs;
-use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use crate::analyzer::AnalyzeOptions;
 use crate::error::{AppError, AppResult};
+use crate::export::infer_format_from_path;
 use crate::model::{LogFilter, LogLevel, OutputFormat};
 
 #[derive(Debug, Clone)]
@@ -50,6 +50,7 @@ fn parse_analyze(args: Vec<String>) -> AppResult<Command> {
     let mut input: Option<PathBuf> = None;
     let mut output: Option<PathBuf> = None;
     let mut format = OutputFormat::Text;
+    let mut format_set = false;
     let mut threads = 4usize;
     let mut top_n = 5usize;
     let mut slow_threshold_ms = 500u64;
@@ -61,7 +62,10 @@ fn parse_analyze(args: Vec<String>) -> AppResult<Command> {
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--out" | "-o" => output = Some(PathBuf::from(next_value(&mut iter, &arg)?)),
-            "--format" | "-f" => format = next_value(&mut iter, &arg)?.parse()?,
+            "--format" | "-f" => {
+                format = next_value(&mut iter, &arg)?.parse()?;
+                format_set = true;
+            }
             "--threads" | "-t" => {
                 threads = parse_positive_usize(&next_value(&mut iter, &arg)?, "threads")?
             }
@@ -89,6 +93,14 @@ fn parse_analyze(args: Vec<String>) -> AppResult<Command> {
     let input = input.ok_or_else(|| {
         AppError::InvalidArgument("missing input file: rlog analyze <FILE>".to_string())
     })?;
+
+    if !format_set {
+        if let Some(path) = output.as_deref() {
+            if let Some(inferred) = infer_format_from_path(path) {
+                format = inferred;
+            }
+        }
+    }
 
     Ok(Command::Analyze(Config {
         input,
@@ -147,20 +159,6 @@ pub fn read_lines(path: &Path) -> AppResult<Vec<String>> {
     Ok(content.lines().map(ToString::to_string).collect())
 }
 
-/// Write the rendered report either to a file or to stdout.
-pub fn write_output(path: Option<&Path>, content: &str) -> AppResult<()> {
-    match path {
-        Some(path) => {
-            fs::write(path, content)?;
-        }
-        None => {
-            let mut stdout = io::stdout().lock();
-            stdout.write_all(content.as_bytes())?;
-        }
-    }
-    Ok(())
-}
-
 /// Built-in demo data used by `cargo run -- demo`.
 ///
 /// The dataset intentionally contains normal records, error records, slow
@@ -179,7 +177,7 @@ pub fn demo_lines() -> Vec<String> {
 }
 
 pub fn usage() -> &'static str {
-    "Rust Log Lab\n\nUSAGE:\n  cargo run -- analyze <FILE> [options]\n  cargo run -- demo\n\nOPTIONS:\n  -o, --out <FILE>       Write report to file\n  -f, --format <FORMAT>  text | json | csv, default text\n  -t, --threads <N>      Worker thread count, default 4\n      --top <N>          Number of top items to display, default 5\n      --slow <MS>        Slow request threshold, default 500\n  -l, --level <LEVEL>    Minimum level: DEBUG/INFO/WARN/ERROR/FATAL\n  -s, --service <NAME>   Keep only one service\n  -k, --keyword <TEXT>   Keep only records containing keyword\n\nLOG FORMAT:\n  service=auth level=ERROR latency=120 msg=\"login failed\"\n"
+    "Rust Log Lab\n\nUSAGE:\n  cargo run -- analyze <FILE> [options]\n  cargo run -- demo\n\nOPTIONS:\n  -o, --out <FILE>       Write report to file\n  -f, --format <FORMAT>  text | markdown | json | csv, default text\n  -t, --threads <N>      Worker thread count, default 4\n      --top <N>          Number of top items to display, default 5\n      --slow <MS>        Slow request threshold, default 500\n  -l, --level <LEVEL>    Minimum level: DEBUG/INFO/WARN/ERROR/FATAL\n  -s, --service <NAME>   Keep only one service\n  -k, --keyword <TEXT>   Keep only records containing keyword\n\nLOG FORMAT:\n  service=auth level=ERROR latency=120 msg=\"login failed\"\n"
 }
 
 #[cfg(test)]
@@ -201,6 +199,23 @@ mod tests {
             Command::Analyze(config) => {
                 assert_eq!(config.format, OutputFormat::Json);
                 assert_eq!(config.options.threads, 2);
+            }
+            _ => panic!("wrong command"),
+        }
+    }
+
+    #[test]
+    fn output_format_can_be_inferred_from_output_path() {
+        let cmd = parse_args(vec![
+            "analyze".to_string(),
+            "a.log".to_string(),
+            "--out".to_string(),
+            "report.md".to_string(),
+        ])
+        .unwrap();
+        match cmd {
+            Command::Analyze(config) => {
+                assert_eq!(config.format, OutputFormat::Markdown);
             }
             _ => panic!("wrong command"),
         }

@@ -101,6 +101,10 @@ impl LogRecord {
     pub fn is_error_like(&self) -> bool {
         matches!(self.level, LogLevel::Error | LogLevel::Fatal)
     }
+
+    pub fn field(&self, key: &str) -> Option<&str> {
+        self.fields.get(key).map(String::as_str)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -137,6 +141,7 @@ impl LogFilter {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputFormat {
     Text,
+    Markdown,
     Json,
     Csv,
 }
@@ -147,10 +152,11 @@ impl FromStr for OutputFormat {
     fn from_str(s: &str) -> AppResult<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
             "text" | "txt" => Ok(OutputFormat::Text),
+            "markdown" | "md" => Ok(OutputFormat::Markdown),
             "json" => Ok(OutputFormat::Json),
             "csv" => Ok(OutputFormat::Csv),
             other => Err(AppError::InvalidArgument(format!(
-                "unknown format `{other}`, expected text/json/csv"
+                "unknown format `{other}`, expected text/markdown/json/csv"
             ))),
         }
     }
